@@ -27,12 +27,12 @@ class TransformerDecoderLayer(nn.Module):
 
     def __init__(self, d_model: int, num_attention_heads: int, intermediate_size: int):
         super(TransformerDecoderLayer, self).__init__()
-        self.layer_norm_1 = None
-        self.layer_norm_2 = None
-        self.layer_norm_3 = None
-        self.self_attention = None
-        self.cross_attention = None
-        self.feed_forward = None
+        self.layer_norm_1 = nn.LayerNorm(d_model)
+        self.layer_norm_2 = nn.LayerNorm(d_model)
+        self.layer_norm_3 = nn.LayerNorm(d_model)
+        self.self_attention = MultiHeadAttention(d_model, num_attention_heads)
+        self.cross_attention = MultiHeadAttention(d_model, num_attention_heads)
+        self.feed_forward = FeedForward(d_model, intermediate_size)
 
     def forward(self, x: torch.Tensor, enc_output: torch.Tensor, tgt_mask: torch.Tensor) -> torch.Tensor:
         """Forward pass through the Transformer decoder layer.
@@ -45,16 +45,21 @@ class TransformerDecoderLayer(nn.Module):
         Returns:
             torch.Tensor: Output tensor of shape (batch_size, seq_len, d_model).
         """
-        # Apply layer normalization and masked multi-head self-attention
-        hidden_state = None
-        x = None
+        # Apply layer normalization and then apply masked multi-head attention
+        normalized_input = self.layer_norm_1(x)
+        hidden_state = self.self_attention(normalized_input, normalized_input, normalized_input, tgt_mask)
+        # Add residual connection 
+        x = x + hidden_state
 
-        # Apply layer normalization and cross-attention
-        hidden_state = None
-        x = None
-        
-        # Apply layer normalization and feed-forward network
-        x = None
+
+        # Apply layer normalization and then apply cross-attention
+        normalized_attention_output = self.layer_norm_2(x)
+        hidden_state = self.cross_attention(hidden_state, enc_output, enc_output, None)
+        x = x + hidden_state  # Residual connection
+
+        normalized_cross_attention_output = self.layer_norm_3(x)
+        feed_forward_output = self.feed_forward(normalized_cross_attention_output)
+        x = x + feed_forward_output
 
         return x
 
@@ -80,8 +85,11 @@ class TransformerDecoder(nn.Module):
     def __init__(self, vocab_size: int, max_position_embeddings: int, d_model: int,
                 num_attention_heads: int, intermediate_size: int, num_hidden_layers: int):
         super(TransformerDecoder, self).__init__()
-        self.embeddings = None
-        self.layers = None
+        self.embeddings = Embeddings(vocab_size, max_position_embeddings, d_model)
+        self.layers = nn.ModuleList([
+            TransformerDecoderLayer(d_model, num_attention_heads, intermediate_size)
+            for _ in range(num_hidden_layers)
+        ])
 
     def forward(self, input_ids: torch.Tensor, enc_output: torch.Tensor) -> torch.Tensor:
         """Forward pass through the Transformer decoder.
@@ -93,15 +101,21 @@ class TransformerDecoder(nn.Module):
         Returns:
             torch.Tensor: Output tensor of shape (batch_size, seq_len, d_model).
         """
-        # Generate token embeddings
-        x = None
-        batch_size, seq_len, _ = x.size()
+        device = input_ids.device
 
-        # Generate causal mask for target tensor
-        tgt_mask = None
+        x = self.embeddings(input_ids)
 
+        # Generate mask
+        batch_size, seq_len = input_ids.shape
+        float_mask = torch.tril(torch.ones(seq_len, seq_len, device=device)) # turn into boolean in attentionhead (becasue of how tests work)
+
+        float_mask = float_mask.unsqueeze(0) # -> (1, seq_len, seq_len)
+        tgt_mask = float_mask.expand(batch_size, -1, -1) # -> (batch_size, seq_len, seq_len)
+
+        # Pass through layers
         for layer in self.layers:
             x = layer(x, enc_output, tgt_mask)
 
         return x
+        
 
